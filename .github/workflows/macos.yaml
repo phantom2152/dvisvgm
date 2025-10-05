@@ -1,0 +1,66 @@
+name: macOS Static Binary
+
+on:
+  push:
+    branches: [ macos ]
+
+jobs:
+  build-macos:
+
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          brew install autoconf automake libtool pkg-config
+          brew install freetype ghostscript
+          brew install asciidoc xmlto docbook-xsl
+          
+      - name: Install BasicTeX
+        run: |
+          # Download and install BasicTeX for kpathsea
+          wget -q https://mirror.ctan.org/systems/mac/mactex/mactex-basictex.pkg
+          sudo installer -pkg mactex-basictex.pkg -target /
+          # Add TeX to PATH
+          echo "/Library/TeX/texbin" >> $GITHUB_PATH
+          
+      - name: Update TeX packages
+        run: |
+          sudo tlmgr update --self
+          sudo tlmgr install kpathsea
+          
+      - name: Autogen
+        run: autoreconf -fi
+        
+      - name: Configure for static build
+        run: |
+          ./configure \
+            --enable-bundled-libs \
+            LDFLAGS="-static-libgcc -static-libstdc++" \
+            CXXFLAGS="-O2 -mmacosx-version-min=10.13"
+            
+      - name: Build
+        run: make -j$(sysctl -n hw.ncpu)
+        
+      - name: Run tests
+        run: make check
+        
+      - name: Create binary artifact
+        run: |
+          mkdir -p dist
+          cp src/dvisvgm dist/
+          strip dist/dvisvgm
+          
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dvisvgm-macos-static
+          path: dist/dvisvgm
+          retention-days: 30
+          
+      - name: Check binary dependencies
+        run: |
+          echo "Binary dependencies:"
+          otool -L dist/dvisvgm
