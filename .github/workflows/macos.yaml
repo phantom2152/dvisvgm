@@ -1,66 +1,117 @@
-name: macOS Static Binary
+name: macOS ARM Static Binary
 
 on:
   push:
     branches: [ macos ]
+  pull_request:
+    branches: [ macos ]
 
 jobs:
   build-macos:
-
     runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install dependencies
+      - name: Install Homebrew dependencies
         run: |
           brew install autoconf automake libtool pkg-config
-          brew install freetype ghostscript
+          brew install freetype ghostscript potrace xxhash
           brew install asciidoc xmlto docbook-xsl
           
-      - name: Install BasicTeX
+      - name: Install MacTeX (BasicTeX)
         run: |
-          # Download and install BasicTeX for kpathsea
-          wget -q https://mirror.ctan.org/systems/mac/mactex/mactex-basictex.pkg
-          sudo installer -pkg mactex-basictex.pkg -target /
-          # Add TeX to PATH
+          # Use brew cask for BasicTeX - more reliable than direct download
+          brew install --cask basictex
+          # Update PATH for current and future steps
           echo "/Library/TeX/texbin" >> $GITHUB_PATH
+          export PATH="/Library/TeX/texbin:$PATH"
+          # Wait for installation to complete
+          sleep 5
           
-      - name: Update TeX packages
+      - name: Update TeX and install kpathsea
         run: |
+          export PATH="/Library/TeX/texbin:$PATH"
+          # Update tlmgr itself
           sudo tlmgr update --self
+          # Install kpathsea if not already present
           sudo tlmgr install kpathsea
           
-      - name: Autogen
-        run: autoreconf -fi
+      - name: Verify dependencies
+        run: |
+          echo "Checking installed tools..."
+          which kpsewhich || echo "kpsewhich not found"
+          pkg-config --version || echo "pkg-config not found"
+          freetype-config --version || echo "freetype-config not found"
+          gs --version || echo "ghostscript not found"
+          
+      - name: Run autogen
+        run: |
+          ./autogen.sh || autoreconf -fi
         
       - name: Configure for static build
         run: |
+          # Configure with bundled libraries for better portability
+          # Note: Full static linking is challenging on macOS due to system libraries
+          # This creates a binary with minimal external dependencies
           ./configure \
             --enable-bundled-libs \
-            LDFLAGS="-static-libgcc -static-libstdc++" \
-            CXXFLAGS="-O2 -mmacosx-version-min=10.13"
+            --prefix=/usr/local \
+            CXXFLAGS="-O2 -arch arm64" \
+            LDFLAGS="-arch arm64"
             
       - name: Build
-        run: make -j$(sysctl -n hw.ncpu)
+        run: |
+          make -j$(sysctl -n hw.ncpu)
         
       - name: Run tests
-        run: make check
+        run: |
+          make check
         
-      - name: Create binary artifact
+      - name: Prepare binary artifact
         run: |
           mkdir -p dist
           cp src/dvisvgm dist/
+          # Strip debug symbols to reduce size
           strip dist/dvisvgm
+          # Make it executable
+          chmod +x dist/dvisvgm
+          
+      - name: Check binary info
+        run: |
+          echo "=== Binary Info ==="
+          file dist/dvisvgm
+          echo ""
+          echo "=== Size ==="
+          ls -lh dist/dvisvgm
+          echo ""
+          echo "=== Dynamic Dependencies ==="
+          otool -L dist/dvisvgm
+          echo ""
+          echo "=== Architecture ==="
+          lipo -info dist/dvisvgm
+          
+      - name: Test binary
+        run: |
+          ./dist/dvisvgm --version
+          ./dist/dvisvgm --help
+          
+      - name: Create release archive
+        run: |
+          cd dist
+          tar -czf dvisvgm-macos-arm64.tar.gz dvisvgm
+          cd ..
           
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dvisvgm-macos-static
+          name: dvisvgm-macos-arm64
           path: dist/dvisvgm
           retention-days: 30
           
-      - name: Check binary dependencies
-        run: |
-          echo "Binary dependencies:"
-          otool -L dist/dvisvgm
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: dvisvgm-macos-arm64-archive
+          path: dist/dvisvgm-macos-arm64.tar.gz
+          retention-days: 30
